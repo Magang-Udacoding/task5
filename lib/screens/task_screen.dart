@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:task5/screens/task_detail_screen.dart';
 import 'package:task5/services/task_storage.dart';
+import 'package:task5/widgets/bounce_fab.dart';
+import 'package:task5/widgets/task_skeleton.dart';
 
 import '../models/task.dart';
 import '../widgets/empty_task_view.dart';
@@ -59,6 +62,10 @@ class _TaskScreenState extends State<TaskScreen> {
   TaskFilter _currentFilter = TaskFilter.all;
 
   final TaskStorage _taskStorage = TaskStorage();
+
+  final GlobalKey<AnimatedListState> _animatedListKey =
+      GlobalKey<AnimatedListState>();
+
   bool _isLoading = true;
 
   List<Task> get _filteredTasks {
@@ -144,13 +151,17 @@ class _TaskScreenState extends State<TaskScreen> {
                 ],
               ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _focusTaskInput,
-        tooltip: 'Tambah tugas',
-        backgroundColor: const Color(0xFF5B5FEF),
-        foregroundColor: Colors.white,
-        child: const Icon(Icons.add),
-      ),
+      floatingActionButton: _isLoading
+          ? null
+          : BounceFab(
+              onPressed: () {
+                if (_taskController.text.trim().isNotEmpty) {
+                  _addTask();
+                } else {
+                  _focusTaskInput();
+                }
+              },
+            ),
     );
   }
 
@@ -192,11 +203,7 @@ class _TaskScreenState extends State<TaskScreen> {
   }
 
   Widget _buildLoadingState() {
-    return const Center(
-      child: CircularProgressIndicator(
-        color: Color(0xFF5B5FEF),
-      ),
-    );
+    return const TaskSkeletonList();
   }
 
   Widget _buildSummaryCard() {
@@ -269,38 +276,59 @@ class _TaskScreenState extends State<TaskScreen> {
   }
 
   Widget _buildTaskArea() {
-    final filteredTask = _filteredTasks;
+    final filteredTasks = _filteredTasks;
 
-    if (filteredTask.isEmpty) {
+    if (filteredTasks.isEmpty) {
       return _buildFilteredEmptyState();
     }
 
-    return ListView.builder(
+    return AnimatedList(
+      key: _animatedListKey,
       padding: const EdgeInsets.fromLTRB(
         20,
         10,
         20,
         20,
       ),
-      itemCount: _tasks.length,
-      itemBuilder: (context, index) {
-        final task = _tasks[index];
+      initialItemCount: filteredTasks.length,
+      itemBuilder: (
+        context,
+        index,
+        animation,
+      ) {
+        final task = filteredTasks[index];
 
-        return Dismissible(
-          key: ValueKey(task.id),
-          direction: DismissDirection.endToStart,
-          confirmDismiss: (_) async {
-            return _confirmDelete(task);
-          },
-          onDismissed: (_) {
-            _deleteTask(task.id);
-          },
-          background: _buildDeleteBackground(),
-          child: TaskCard(
-            task: task,
-            onChanged: (value) {
-              _toggleTask(task.id);
-            },
+        final curvedAnimation = CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeOutCubic,
+        );
+
+        return SizeTransition(
+          sizeFactor: curvedAnimation,
+          axisAlignment: 0.0,
+          child: FadeTransition(
+            opacity: curvedAnimation,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0, 0.4),
+                end: Offset.zero,
+              ).animate(curvedAnimation),
+              child: Dismissible(
+                key: ValueKey(task.id),
+                direction: DismissDirection.endToStart,
+                confirmDismiss: (_) async {
+                  final confirmed = await _confirmDelete(task);
+
+                  if (confirmed) {
+                    await _deleteTask(task.id);
+                  }
+
+                  return false;
+                },
+                background: _buildDeleteBackground(),
+                child: _buildTaskItem(task),
+              ),
+            ),
           ),
         );
       },
@@ -316,7 +344,7 @@ class _TaskScreenState extends State<TaskScreen> {
         16,
       ),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Expanded(
             child: TextField(
@@ -337,18 +365,32 @@ class _TaskScreenState extends State<TaskScreen> {
             ),
           ),
           const SizedBox(width: 10),
-          Container(
-            height: 56,
-            width: 56,
-            decoration: BoxDecoration(
-              color: const Color(0xFF5B5FEF),
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: IconButton(
-              onPressed: _addTask,
-              icon: const Icon(
-                Icons.add,
-                color: Colors.white,
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () {
+                _addTask();
+              },
+              child: Container(
+                height: 56,
+                width: 56,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF5B5FEF),
+                  borderRadius: BorderRadius.circular(18),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF5B5FEF).withOpacity(0.3),
+                      blurRadius: 8,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.add,
+                  color: Colors.white,
+                  size: 28,
+                ),
               ),
             ),
           ),
@@ -410,6 +452,23 @@ class _TaskScreenState extends State<TaskScreen> {
     }
   }
 
+
+  Widget _buildTaskItem(Task task) {
+    return Hero(
+      tag: 'task-${task.id}',
+      child: TaskCard(
+        task: task,
+        onChanged: (value) {
+          _toggleTask(task.id);
+        },
+        onTap: () {
+          _openTaskDetail(task);
+        },
+      ),
+    );
+  }
+
+
   Future<void> _addTask() async {
     final title = _taskController.text.trim();
 
@@ -424,9 +483,25 @@ class _TaskScreenState extends State<TaskScreen> {
       createdAt: DateTime.now(),
     );
 
+    // Switch filter to 'all' if user is currently on 'completed' tab so the new task is shown
+    if (_currentFilter == TaskFilter.completed) {
+      _currentFilter = TaskFilter.all;
+    }
+
+    final wasEmpty = _filteredTasks.isEmpty;
+
     setState(() {
       _tasks.insert(0, task);
     });
+
+    if (!wasEmpty) {
+      _animatedListKey.currentState?.insertItem(
+        0,
+        duration: const Duration(
+          milliseconds: 350,
+        ),
+      );
+    }
 
     await _taskStorage.saveTasks(_tasks);
 
@@ -435,11 +510,62 @@ class _TaskScreenState extends State<TaskScreen> {
   }
 
   Future<void> _deleteTask(String taskId) async {
+    final filteredTasks = List<Task>.from(_filteredTasks);
+
+    final index = filteredTasks.indexWhere(
+      (task) => task.id == taskId,
+    );
+
+    if (index == -1) {
+      return;
+    }
+
+    final removedTask = filteredTasks[index];
+
     setState(() {
       _tasks.removeWhere(
         (task) => task.id == taskId,
       );
     });
+
+    _animatedListKey.currentState?.removeItem(
+      index,
+      (
+        context,
+        animation,
+      ) {
+        final curvedAnimation = CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeInOutCubic,
+        );
+
+        return SizeTransition(
+          sizeFactor: curvedAnimation,
+          axisAlignment: 0.0,
+          child: FadeTransition(
+            opacity: animation,
+            child: ScaleTransition(
+              scale: Tween<double>(
+                begin: 0.75,
+                end: 1.0,
+              ).animate(curvedAnimation),
+              child: SlideTransition(
+                position: Tween<Offset>(
+                  begin: const Offset(0, 1.0),
+                  end: Offset.zero,
+                ).animate(curvedAnimation),
+                child: _buildTaskItem(
+                  removedTask,
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+      duration: const Duration(
+        milliseconds: 450,
+      ),
+    );
 
     await _taskStorage.saveTasks(_tasks);
   }
@@ -480,6 +606,8 @@ class _TaskScreenState extends State<TaskScreen> {
   Future<void> _loadTasks() async {
     final savedTasks = await _taskStorage.loadTasks();
 
+    await Future.delayed(const Duration(milliseconds: 600));
+
     if (!mounted) {
       return;
     }
@@ -495,5 +623,13 @@ class _TaskScreenState extends State<TaskScreen> {
 
   void _focusTaskInput() {
     _taskFocusNode.requestFocus();
+  }
+
+  void _openTaskDetail(Task task) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => TaskDetailScreen(task: task),
+      ),
+    );
   }
 }
